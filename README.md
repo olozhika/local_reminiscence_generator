@@ -1,6 +1,9 @@
-# APLRdb_generator
+# 聊天数据数据库生成器
 
-一个独立的 Python 工具，旨在从繁杂的聊天记录中提取关键事件（Events）和记忆节点（Nodes），并生成与 Astrbot 插件兼容的 SQLite 数据库文件（`.db`）。
+暂时别用！作者还没测试！独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量、流式地提取事件，整理为满足 [本地回忆[APLR]](https://github.com/olozhika/astrbot_plugin_local_reminiscence) repo格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
+# 暂时别用！作者还没测试！
+# 暂时别用！作者还没测试！
+
 
 ## 核心功能
 
@@ -31,8 +34,16 @@ pip install pydantic openai
 
 ### 2. 准备数据
 
-在项目根目录下创建 `chat_records` 文件夹，将您的聊天记录以 `.txt` 格式放入其中。
+聊天记录准备方式：
+1. 微信：用[WeFlow](https://github.com/hicccc77/WeFlow)导出为txt
+2. QQ：旧版QQ直接用消息管理导出为txt，并删掉表头；新版用[qq-chat-exporter](https://github.com/shuakami/qq-chat-exporter)
+
+请修改文件名，使群聊文件的名称包含“群聊”二字
+
+在项目根目录下创建 `chat_records` 文件夹，将您的聊天txt记录复制放入其中（请务必在其他地方保存你准备的这些聊天记录，因为本程序会在预处理阶段删掉其中部分冗余内容）。
+
 聊天记录格式应为：
+
 ```text
 2022-07-02 17:53:48 用户名
 消息内容...
@@ -42,29 +53,6 @@ pip install pydantic openai
 
 编辑 `config.json` 文件：
 
-```json
-{
-  "api": {
-    "api_key": "您的API密钥",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o"
-  },
-  "prompts": {
-    "system_prompt": "你是一个记忆总结助手。",
-    "ai_name": "Lanya"
-  },
-  "files": {
-    "input_dir": "chat_records",
-    "output_db": "memory.db",
-    "batch_size_kb": 40,
-    "time_gap_hours": 3,
-    "target_username": "目标用户名",
-    "context_lines": 10,
-    "start_date": "2022-07-01",
-    "end_date": "2022-08-31"
-  }
-}
-```
 
 ### 4. 运行
 
