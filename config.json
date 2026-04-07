@@ -1,0 +1,24 @@
+{
+  "api": {
+    "api_key": "YOUR_API_KEY_HERE",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4o",
+    "description": "AI 运营商配置。api_key 是您的密钥，base_url 是接口地址，model 是使用的模型名称。"
+  },
+  "prompts": {
+    "system_prompt": "你是一个记忆总结助手。",
+    "ai_name": "Lanya",
+    "description": "提示词配置。system_prompt 是基础系统提示词，ai_name 是 AI 助手的名字。"
+  },
+  "files": {
+    "input_dir": "chat_records",
+    "output_db": "memory.db",
+    "batch_size_kb": 40,
+    "time_gap_hours": 3,
+    "target_username": "摇颺葳蕤",
+    "context_lines": 10,
+    "start_date": "2022-07-01",
+    "end_date": "2022-08-31",
+    "description": "文件路径与分批配置。input_dir 是存放聊天记录 txt 文件的目录；batch_size_kb 是单次总结的最大字节数；time_gap_hours 是判定对话中断的时间差（小时）；target_username 是群聊预处理的目标用户名；context_lines 是保留目标用户发言前后的上下文条数（默认为10）；start_date 和 end_date 是总结的时间范围（YYYY-MM-DD）。"
+  }
+}
