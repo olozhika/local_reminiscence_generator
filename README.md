@@ -1,6 +1,6 @@
 # 聊天数据数据库生成器
 
-暂时别用！作者还没测试！独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量、流式地提取事件，整理为满足 [本地回忆[APLR]](https://github.com/olozhika/astrbot_plugin_local_reminiscence) repo格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
+暂时别用！作者还没测试！独立Python程序，使用用户提供的微信、QQ等聊天记录，使用LLM批量提取事件，整理为满足 [本地回忆[APLR]](https://github.com/olozhika/astrbot_plugin_local_reminiscence) repo格式的数据库文件，实现网聊记忆数据化。适合用AI帮自己管理记忆或者人格切片、数字飞升等情形（这对吗）
 # 暂时别用！作者还没测试！
 # 暂时别用！作者还没测试！
 
