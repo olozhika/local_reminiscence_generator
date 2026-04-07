@@ -8,14 +8,14 @@
   "prompts": {
     "system_prompt": "你是一个记忆总结助手。",
     "ai_name": "Lanya",
-    "description": "提示词配置。system_prompt 是基础系统提示词，ai_name 是 AI 助手的名字。"
+    "description": "提示词配置。system_prompt 是基础系统提示词，ai_name 是 AI 助手的名字。除了“记忆总结助手”这种写法，也可以考虑把ai_name和身份都改成聊天记录的主角，这样总结代入感可能会更强。"
   },
   "files": {
     "input_dir": "chat_records",
     "output_db": "memory.db",
     "batch_size_kb": 40,
     "time_gap_hours": 3,
-    "target_username": "摇颺葳蕤",
+    "target_username": "这里是主角的昵称，群聊中将会寻找这个昵称发言上下各context_lines条内容",
     "context_lines": 10,
     "start_date": "2022-07-01",
     "end_date": "2022-08-31",
