@@ -1,24 +1,33 @@
 {
   "api": {
-    "api_key": "YOUR_API_KEY_HERE",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4o",
+    "api_key": "你的APIkey",
+    "base_url": "",
+    "model": "",
     "description": "AI 运营商配置。api_key 是您的密钥，base_url 是接口地址，model 是使用的模型名称。"
   },
   "prompts": {
-    "system_prompt": "你是一个记忆总结助手。",
-    "ai_name": "Lanya",
-    "description": "提示词配置。system_prompt 是基础系统提示词，ai_name 是 AI 助手的名字。除了“记忆总结助手”这种写法，也可以考虑把ai_name和身份都改成聊天记录的主角，这样总结代入感可能会更强。"
+    "ai_name": "名字 为了更好的总结效果 建议填你自己的网名",
+    "system_prompt": "你的个人描述比如真名网名身份性格",
+    "description": "提示词配置。ai_name 是你的名字，system_prompt 是你的人格描述（只描述'我是谁'，叙事风格由程序自动处理）。"
   },
   "files": {
-    "input_dir": "chat_records",
+    "input_dir": "聊天记录",
     "output_db": "memory.db",
-    "batch_size_kb": 40,
+    "batch_size_kb": 50,
     "time_gap_hours": 3,
-    "target_username": "这里是主角的昵称，群聊中将会寻找这个昵称发言上下各context_lines条内容",
+    "max_concurrent": 0,
+    "max_retries": 50,
+    "qq_id": "这里填你的QQ号",
+    "target_username": {
+      "qq": "你的QQ昵称",
+      "wechat_private": "我",
+      "wechat_group": "你的微信昵称"
+    },
     "context_lines": 10,
-    "start_date": "2022-07-01",
-    "end_date": "2022-08-31",
-    "description": "文件路径与分批配置。input_dir 是存放聊天记录 txt 文件的目录；batch_size_kb 是单次总结的最大字节数；time_gap_hours 是判定对话中断的时间差（小时）；target_username 是群聊预处理的目标用户名；context_lines 是保留目标用户发言前后的上下文条数（默认为10）；start_date 和 end_date 是总结的时间范围（YYYY-MM-DD）。"
+    "max_nodes_context": 50,
+    "optimize_batch_size": 20,
+    "start_date": "2016-01-01",
+    "end_date": "2025-12-31",
+    "description": "文件路径与分批配置。input_dir 是存放聊天记录的根目录；batch_size_kb 是单次总结的最大字节数；time_gap_hours 是判定对话中断的时间差（小时）；qq_id 是你的QQ号（用于在QQ群聊中识别你的发言）；target_username 是群聊预处理的目标用户名（QQ私聊和微信群聊使用）；context_lines 是保留目标用户发言前后的上下文条数；max_nodes_context 是每次传给LLM的最大节点数；optimize_batch_size 是节点优化时每批处理的节点数；start_date 和 end_date 是总结的时间范围。"
   }
 }

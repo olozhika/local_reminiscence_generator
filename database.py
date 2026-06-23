@@ -1,7 +1,11 @@
 import sqlite3
+import json
+import logging
 from contextlib import contextmanager
 from typing import List
-from models import DailySummary, MemoryNode
+from models import BatchSummary, MemoryNode
+
+logger = logging.getLogger(__name__)
 
 class MemoryDB:
     def __init__(self, db_path: str):
@@ -9,7 +13,7 @@ class MemoryDB:
         self._init_db()
 
     def _init_db(self):
-        """初始化数据库，完全兼容 Astrbot APLR 插件的表结构"""
+        """初始化数据库，完全兼容 Astrbot 插件的表结构"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
@@ -57,12 +61,14 @@ class MemoryDB:
                 )
             """)
             
-            # 5. nodes 表
+            # 5. nodes 表 (支持别名和关联事件)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS nodes (
                     name TEXT PRIMARY KEY,
                     type TEXT,
                     description TEXT,
+                    aliases TEXT DEFAULT '[]',
+                    related_events TEXT DEFAULT '[]',
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -91,41 +97,50 @@ class MemoryDB:
         finally:
             conn.close()
 
-    def insert_summary(self, summary: DailySummary):
-        """插入总结数据，兼容 Astrbot 逻辑"""
+    def _get_unique_event_id(self, cursor, event_id):
+        """
+        检查事件ID是否重复，如果重复则自动修改序号。
+        例如: evt_20180101_001 -> evt_20180101_002
+        """
+        original_id = event_id
+        counter = 1
+        
+        while True:
+            cursor.execute("SELECT COUNT(*) FROM events WHERE event_id = ?", (event_id,))
+            if cursor.fetchone()[0] == 0:
+                return event_id
+            
+            # ID重复，修改序号
+            counter += 1
+            # 解析原始ID，修改序号部分
+            parts = original_id.rsplit('_', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                event_id = f"{parts[0]}_{counter:03d}"
+            else:
+                event_id = f"{original_id}_{counter}"
+
+    def insert_summary(self, summary: BatchSummary):
+        """插入总结数据，节点采用追加策略，事件ID自动去重"""
         with self._get_conn() as conn:
             cursor = conn.cursor()
             
-            # 插入/更新记忆节点
-            for node in summary.nodes:
-                cursor.execute("""
-                    INSERT INTO nodes (name, type, description, last_updated)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                    ON CONFLICT(name) DO UPDATE SET
-                        type = excluded.type,
-                        description = excluded.description,
-                        last_updated = CURRENT_TIMESTAMP
-                """, (node.name, node.type, node.description))
-
-            # 删除冗余节点
-            if summary.deleted_nodes:
-                placeholders = ','.join(['?'] * len(summary.deleted_nodes))
-                cursor.execute(f"DELETE FROM nodes WHERE name IN ({placeholders})", summary.deleted_nodes)
-
-            # 插入事件
+            # 先插入事件（因为节点的related_events需要引用事件ID）
             for event in summary.events:
+                # 检查并确保事件ID唯一
+                unique_event_id = self._get_unique_event_id(cursor, event.event_id)
+                
                 cursor.execute("""
                     INSERT OR REPLACE INTO events 
                     (event_id, date, narrative, emotion, importance, emotional_intensity, reflection)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    event.event_id,
-                    summary.date,
+                    unique_event_id,
+                    event.date,  # 使用事件自己的日期
                     event.narrative,
                     event.emotion,
                     event.importance,
                     event.emotional_intensity,
-                    None # reflection 不再由 AI 填写
+                    event.reflection if event.reflection != "无" else None
                 ))
                 
                 # 处理标签
@@ -137,8 +152,59 @@ class MemoryDB:
                         tag_id = tag_row['id']
                         cursor.execute(
                             "INSERT OR IGNORE INTO event_tags (event_id, tag_id) VALUES (?, ?)",
-                            (event.event_id, tag_id)
+                            (unique_event_id, tag_id)
                         )
+
+            # 追加记忆节点（合并而非覆写）
+            for node in summary.nodes:
+                # 检查节点是否已存在
+                cursor.execute("SELECT * FROM nodes WHERE name = ?", (node.name,))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # 合并描述（追加新内容）
+                    old_desc = existing['description'] or ''
+                    new_desc = node.description
+                    # 如果新描述不是旧描述的子集，则追加
+                    if new_desc and new_desc not in old_desc:
+                        merged_desc = f"{old_desc}\n{new_desc}" if old_desc else new_desc
+                    else:
+                        merged_desc = old_desc
+                    
+                    # 合并别名（去重）
+                    old_aliases = json.loads(existing['aliases'] or '[]')
+                    new_aliases = node.aliases
+                    merged_aliases = list(set(old_aliases + new_aliases))
+                    
+                    # 合并关联事件（去重）
+                    old_events = json.loads(existing['related_events'] or '[]')
+                    new_events = node.related_events
+                    merged_events = list(set(old_events + new_events))
+                    
+                    cursor.execute("""
+                        UPDATE nodes SET 
+                            type = ?,
+                            description = ?,
+                            aliases = ?,
+                            related_events = ?,
+                            last_updated = CURRENT_TIMESTAMP
+                        WHERE name = ?
+                    """, (node.type, merged_desc, json.dumps(merged_aliases, ensure_ascii=False), 
+                          json.dumps(merged_events, ensure_ascii=False), node.name))
+                else:
+                    # 新节点，直接插入
+                    cursor.execute("""
+                        INSERT INTO nodes (name, type, description, aliases, related_events, last_updated)
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """, (node.name, node.type, node.description, 
+                          json.dumps(node.aliases, ensure_ascii=False),
+                          json.dumps(node.related_events, ensure_ascii=False)))
+
+            # 删除冗余节点
+            if summary.deleted_nodes:
+                placeholders = ','.join(['?'] * len(summary.deleted_nodes))
+                cursor.execute(f"DELETE FROM nodes WHERE name IN ({placeholders})", summary.deleted_nodes)
+
             conn.commit()
 
     def get_all_nodes(self):
@@ -146,3 +212,88 @@ class MemoryDB:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM nodes")
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_events_count(self):
+        """获取事件总数"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM events")
+            return cursor.fetchone()[0]
+
+    def deduplicate_nodes(self):
+        """节点去重：合并同名节点的描述、别名和关联事件"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM nodes")
+            nodes = [dict(row) for row in cursor.fetchall()]
+            
+            # 按名称分组（理论上不应该有重复，因为name是PRIMARY KEY）
+            # 但我们可以处理描述中的重复内容
+            for node in nodes:
+                desc = node['description'] or ''
+                aliases = json.loads(node['aliases'] or '[]')
+                events = json.loads(node['related_events'] or '[]')
+                
+                # 去重别名和事件
+                unique_aliases = list(set(aliases))
+                unique_events = list(set(events))
+                
+                # 如果有变化，更新
+                if len(unique_aliases) != len(aliases) or len(unique_events) != len(events):
+                    cursor.execute("""
+                        UPDATE nodes SET 
+                            aliases = ?,
+                            related_events = ?
+                        WHERE name = ?
+                    """, (json.dumps(unique_aliases, ensure_ascii=False),
+                          json.dumps(unique_events, ensure_ascii=False),
+                          node['name']))
+            
+            conn.commit()
+            logger.info(f"节点去重完成，处理了 {len(nodes)} 个节点")
+
+    def get_all_nodes_list(self):
+        """获取所有节点列表"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM nodes")
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_node(self, name: str, type: str = None, description: str = None, 
+                    aliases: List[str] = None, related_events: List[str] = None):
+        """更新单个节点"""
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            
+            # 构建更新语句
+            updates = []
+            params = []
+            if type is not None:
+                updates.append("type = ?")
+                params.append(type)
+            if description is not None:
+                updates.append("description = ?")
+                params.append(description)
+            if aliases is not None:
+                updates.append("aliases = ?")
+                params.append(json.dumps(aliases, ensure_ascii=False))
+            if related_events is not None:
+                updates.append("related_events = ?")
+                params.append(json.dumps(related_events, ensure_ascii=False))
+            
+            if updates:
+                updates.append("last_updated = CURRENT_TIMESTAMP")
+                params.append(name)
+                sql = f"UPDATE nodes SET {', '.join(updates)} WHERE name = ?"
+                cursor.execute(sql, params)
+                conn.commit()
+
+    def delete_nodes(self, node_names: List[str]):
+        """批量删除节点"""
+        if not node_names:
+            return
+        with self._get_conn() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['?'] * len(node_names))
+            cursor.execute(f"DELETE FROM nodes WHERE name IN ({placeholders})", node_names)
+            conn.commit()
