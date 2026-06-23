@@ -995,15 +995,191 @@ async def retry_failed_batches(config_path="config.json"):
     logger.removeHandler(file_handler)
     file_handler.close()
 
+async def optimize_nodes_only(config_path="config.json"):
+    """只优化节点，不总结事件"""
+    # 1. 加载配置
+    logger.info(f"加载配置文件: {config_path}")
+    config = load_config(config_path)
+    if not config:
+        return
+    
+    config_name = os.path.splitext(os.path.basename(config_path))[0]
+    
+    # 创建日志文件
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{config_name}_optimize.log")
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    
+    api_cfg = config["api"]
+    prompt_cfg = config["prompts"]
+    file_cfg = config["files"]
+    
+    # 初始化数据库
+    db_path = file_cfg["output_db"]
+    if not os.path.exists(db_path):
+        logger.error(f"数据库文件不存在: {db_path}")
+        logger.removeHandler(file_handler)
+        file_handler.close()
+        return
+    
+    # 备份数据库
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"{os.path.splitext(db_path)[0]}_optimize_{timestamp}.db"
+    shutil.copy2(db_path, backup_name)
+    logger.info(f"已备份数据库: {backup_name}")
+    
+    db = MemoryDB(db_path)
+    
+    # 显示当前数据库状态
+    existing_nodes = db.get_all_nodes()
+    existing_events_count = db.get_events_count()
+    print("\n" + "="*50)
+    print(f"数据库: {db_path}")
+    print(f"当前事件数: {existing_events_count}")
+    print(f"当前节点数: {len(existing_nodes)}")
+    print("="*50 + "\n")
+    
+    if not existing_nodes:
+        logger.info("没有节点需要优化")
+        logger.removeHandler(file_handler)
+        file_handler.close()
+        return
+    
+    # 初始化LLM客户端
+    client = AsyncOpenAI(
+        api_key=api_cfg["api_key"], 
+        base_url=api_cfg["base_url"],
+        timeout=180.0,
+        max_retries=0,
+        default_headers={
+            "User-Agent": "Cursor/0.45.0 (Windows_NT; x64) AppleWebKit/537.36"
+        }
+    )
+    
+    # 请求频率控制
+    request_semaphore = asyncio.Semaphore(2)
+    last_request_time = 0
+    request_lock = asyncio.Lock()
+    
+    async def llm_generate(prompt, system_prompt):
+        """调用LLM API"""
+        max_retries = file_cfg.get("max_retries", 50)
+        
+        for attempt in range(max_retries):
+            try:
+                async with request_lock:
+                    nonlocal last_request_time
+                    now = asyncio.get_event_loop().time()
+                    elapsed = now - last_request_time
+                    min_interval = 3 + random.uniform(0, 5)
+                    if elapsed < min_interval:
+                        wait = min_interval - elapsed
+                        await asyncio.sleep(wait)
+                    last_request_time = asyncio.get_event_loop().time()
+                
+                async with request_semaphore:
+                    logger.info(f"正在调用LLM API... (prompt长度: {len(prompt)} 字符, 尝试 {attempt+1}/{max_retries})")
+                    response = await client.chat.completions.create(
+                        model=api_cfg["model"],
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ],
+                        response_format={"type": "json_object"}
+                    )
+                    logger.info("LLM API调用成功")
+                    return response.choices[0].message.content
+            except Exception as e:
+                logger.warning(f"LLM API调用失败 (尝试 {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    if attempt < 5:
+                        wait_times = [2, 8, 16, 32, 64]
+                        wait_time = wait_times[attempt]
+                    else:
+                        wait_time = random.uniform(0.5, 5)
+                    logger.info(f"等待 {wait_time} 秒后重试...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"LLM API调用失败，已重试 {max_retries} 次")
+                    raise
+    
+    summarizer = DailySummarizer(
+        llm_generate, 
+        ai_name=prompt_cfg["ai_name"], 
+        base_system_prompt=prompt_cfg["system_prompt"]
+    )
+    
+    # 开始节点优化
+    logger.info("开始节点优化...")
+    optimize_batch_size = file_cfg.get("optimize_batch_size", 20)
+    
+    # 按类型分组，同类节点一起优化
+    nodes_by_type = {}
+    for node in existing_nodes:
+        node_type = node.get('type', '未知') or '未知'
+        if node_type not in nodes_by_type:
+            nodes_by_type[node_type] = []
+        nodes_by_type[node_type].append(node)
+    
+    optimized_count = 0
+    deleted_count = 0
+    
+    for node_type, nodes in nodes_by_type.items():
+        # 将同类型节点分批
+        for batch_start in range(0, len(nodes), optimize_batch_size):
+            batch_nodes = nodes[batch_start:batch_start + optimize_batch_size]
+            logger.info(f"正在优化 {node_type} 类型节点: {batch_start+1}-{min(batch_start+optimize_batch_size, len(nodes))}/{len(nodes)}")
+            
+            result = await summarizer.optimize_nodes_batch(batch_nodes)
+            
+            if result:
+                # 更新优化后的节点
+                for opt_node in result.get('optimized_nodes', []):
+                    db.update_node(
+                        name=opt_node['name'],
+                        type=opt_node.get('type'),
+                        description=opt_node.get('description'),
+                        aliases=opt_node.get('aliases'),
+                        related_events=opt_node.get('related_events')
+                    )
+                    optimized_count += 1
+                
+                # 删除冗余节点
+                nodes_to_delete = result.get('nodes_to_delete', [])
+                if nodes_to_delete:
+                    db.delete_nodes(nodes_to_delete)
+                    deleted_count += len(nodes_to_delete)
+            else:
+                logger.warning(f"节点优化批次失败，跳过")
+    
+    logger.info(f"节点优化完成: 优化了 {optimized_count} 个节点，删除了 {deleted_count} 个冗余节点")
+    
+    # 显示优化后的数据库状态
+    final_nodes = db.get_all_nodes()
+    final_events_count = db.get_events_count()
+    print("\n" + "="*50)
+    print(f"优化完成!")
+    print(f"事件数: {final_events_count}")
+    print(f"节点数: {len(existing_nodes)} → {len(final_nodes)}")
+    print("="*50 + "\n")
+    
+    # 移除日志处理器
+    logger.removeHandler(file_handler)
+    file_handler.close()
+
 if __name__ == "__main__":
     # 命令行参数用法:
     # python main.py                    # 使用默认 config.json
     # python main.py config1            # 使用 config1.json
     # python main.py config1 config2    # 依次使用 config1.json 和 config2.json
     # python main.py --retry config1    # 重新运行 config1 的失败批次
+    # python main.py --optimize config1 # 只优化 config1 的节点
     
     if len(sys.argv) > 1:
-        # 检查是否有 --retry 参数
+        # 检查是否有特殊模式参数
         if sys.argv[1] == "--retry":
             # 重新运行失败批次
             if len(sys.argv) > 2:
@@ -1026,6 +1202,28 @@ if __name__ == "__main__":
             else:
                 # 默认使用 config.json
                 asyncio.run(retry_failed_batches())
+        elif sys.argv[1] == "--optimize":
+            # 只优化节点
+            if len(sys.argv) > 2:
+                config_names = sys.argv[2:]
+                for config_name in config_names:
+                    if not config_name.endswith('.json'):
+                        config_file = f"{config_name}.json"
+                    else:
+                        config_file = config_name
+                    
+                    if not os.path.exists(config_file):
+                        logger.error(f"配置文件不存在: {config_file}")
+                        continue
+                    
+                    print(f"\n{'='*60}")
+                    print(f"优化节点: {config_file}")
+                    print(f"{'='*60}\n")
+                    
+                    asyncio.run(optimize_nodes_only(config_file))
+            else:
+                # 默认使用 config.json
+                asyncio.run(optimize_nodes_only())
         else:
             # 正常运行
             config_names = sys.argv[1:]
