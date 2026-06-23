@@ -139,12 +139,22 @@ python main.py myconfig
 
 # 你也可以依次执行多个配置文件,每个配置文件执行前如果数据库db文件已存在会自动备份
 python main.py config1 config2 config3
+```
 
-# 重新运行失败批次
+#### 场景范例
+
+```bash
+# 首先，你准备好了config1.json，并运行
+python main.py config1
+# 理论上你只需要运行这一条
+
+# 本来只要运行上面的就可以了，可惜你在进入节点优化环节后发现log文件夹里有一些失败的批次，于是你打断进程重新运行失败批次
 python main.py --retry config1
+# 这回终于全部总结好了，之后你执行下面的指令优化节点
+python main.py --optimize config1
 
-# 如果你第二年有新的聊天记录需要补充，可以把output_db写成你已有的数据库文件直接追加并执行
-python main.py
+# 你第二年带来了新的聊天记录需要补充，于是把output_db写成你已有的数据库文件直接追加并执行
+python main.py config2
 ```
 
 ### 5. 自动确认模式
