@@ -767,27 +767,41 @@ async def main(config_path="config.json"):
     all_nodes = db.get_all_nodes_list()
     optimize_batch_size = file_cfg.get("optimize_batch_size", 20)
     
+    # 只优化字符数超过200的节点
+    nodes_to_optimize = [n for n in all_nodes if len(n.get('description', '') or '') > 200]
+    skipped_count = len(all_nodes) - len(nodes_to_optimize)
+    if skipped_count > 0:
+        logger.info(f"跳过 {skipped_count} 个描述较短的节点（≤200字符）")
+    
+    if not nodes_to_optimize:
+        logger.info("没有需要优化的节点（所有节点描述都≤200字符）")
+    
+    optimized_count = 0
+    deleted_count = 0
+    opt_semaphore = asyncio.Semaphore(2)  # 节点优化最多2个并发
+    
     # 按类型分组，同类节点一起优化
     nodes_by_type = {}
-    for node in all_nodes:
+    for node in nodes_to_optimize:
         node_type = node.get('type', '未知') or '未知'
         if node_type not in nodes_by_type:
             nodes_by_type[node_type] = []
         nodes_by_type[node_type].append(node)
     
-    optimized_count = 0
-    deleted_count = 0
-    
     for node_type, nodes in nodes_by_type.items():
         # 将同类型节点分批
+        optimize_batches = []
         for batch_start in range(0, len(nodes), optimize_batch_size):
             batch_nodes = nodes[batch_start:batch_start + optimize_batch_size]
-            logger.info(f"正在优化 {node_type} 类型节点: {batch_start+1}-{min(batch_start+optimize_batch_size, len(nodes))}/{len(nodes)}")
+            optimize_batches.append((batch_nodes, batch_start, len(nodes)))
+        
+        async def process_optimize_batch_main(batch_nodes, batch_start, total):
+            batch_num = f"{batch_start+1}-{min(batch_start+optimize_batch_size, total)}/{total}"
+            logger.info(f"正在优化 {node_type} 类型节点: {batch_num}")
             
             result = await summarizer.optimize_nodes_batch(batch_nodes)
             
             if result:
-                # 更新优化后的节点
                 for opt_node in result.get('optimized_nodes', []):
                     db.update_node(
                         name=opt_node['name'],
@@ -796,15 +810,28 @@ async def main(config_path="config.json"):
                         aliases=opt_node.get('aliases'),
                         related_events=opt_node.get('related_events')
                     )
-                    optimized_count += 1
                 
-                # 删除冗余节点
                 nodes_to_delete = result.get('nodes_to_delete', [])
                 if nodes_to_delete:
                     db.delete_nodes(nodes_to_delete)
-                    deleted_count += len(nodes_to_delete)
+                
+                return len(result.get('optimized_nodes', [])), len(nodes_to_delete)
             else:
-                logger.warning(f"节点优化批次失败，跳过")
+                logger.warning(f"节点优化批次失败: {node_type} {batch_num}")
+                return 0, 0
+        
+        async def process_with_semaphore_main(bn, bs, t):
+            async with opt_semaphore:
+                return await process_optimize_batch_main(bn, bs, t)
+        
+        results = await asyncio.gather(*[
+            process_with_semaphore_main(bn, bs, t) 
+            for bn, bs, t in optimize_batches
+        ])
+        
+        for opt_count, del_count in results:
+            optimized_count += opt_count
+            deleted_count += del_count
     
     logger.info(f"节点优化完成: 优化了 {optimized_count} 个节点，删除了 {deleted_count} 个冗余节点")
     logger.info(f"所有批次处理完成。数据库: {file_cfg['output_db']}")
@@ -1116,27 +1143,42 @@ async def optimize_nodes_only(config_path="config.json"):
     logger.info("开始节点优化...")
     optimize_batch_size = file_cfg.get("optimize_batch_size", 20)
     
+    # 只优化字符数超过200的节点
+    nodes_to_optimize = [n for n in existing_nodes if len(n.get('description', '') or '') > 200]
+    skipped_count = len(existing_nodes) - len(nodes_to_optimize)
+    if skipped_count > 0:
+        logger.info(f"跳过 {skipped_count} 个描述较短的节点（≤200字符）")
+    
+    if not nodes_to_optimize:
+        logger.info("没有需要优化的节点（所有节点描述都≤200字符）")
+    
+    optimized_count = 0
+    deleted_count = 0
+    
     # 按类型分组，同类节点一起优化
     nodes_by_type = {}
-    for node in existing_nodes:
+    for node in nodes_to_optimize:
         node_type = node.get('type', '未知') or '未知'
         if node_type not in nodes_by_type:
             nodes_by_type[node_type] = []
         nodes_by_type[node_type].append(node)
     
-    optimized_count = 0
-    deleted_count = 0
+    opt_semaphore = asyncio.Semaphore(2)  # 节点优化最多2个并发
     
     for node_type, nodes in nodes_by_type.items():
         # 将同类型节点分批
+        optimize_batches = []
         for batch_start in range(0, len(nodes), optimize_batch_size):
             batch_nodes = nodes[batch_start:batch_start + optimize_batch_size]
-            logger.info(f"正在优化 {node_type} 类型节点: {batch_start+1}-{min(batch_start+optimize_batch_size, len(nodes))}/{len(nodes)}")
+            optimize_batches.append((batch_nodes, batch_start, len(nodes)))
+        
+        async def process_optimize_batch(batch_nodes, batch_start, total):
+            batch_num = f"{batch_start+1}-{min(batch_start+optimize_batch_size, total)}/{total}"
+            logger.info(f"正在优化 {node_type} 类型节点: {batch_num}")
             
             result = await summarizer.optimize_nodes_batch(batch_nodes)
             
             if result:
-                # 更新优化后的节点
                 for opt_node in result.get('optimized_nodes', []):
                     db.update_node(
                         name=opt_node['name'],
@@ -1145,15 +1187,28 @@ async def optimize_nodes_only(config_path="config.json"):
                         aliases=opt_node.get('aliases'),
                         related_events=opt_node.get('related_events')
                     )
-                    optimized_count += 1
                 
-                # 删除冗余节点
                 nodes_to_delete = result.get('nodes_to_delete', [])
                 if nodes_to_delete:
                     db.delete_nodes(nodes_to_delete)
-                    deleted_count += len(nodes_to_delete)
+                
+                return len(result.get('optimized_nodes', [])), len(nodes_to_delete)
             else:
-                logger.warning(f"节点优化批次失败，跳过")
+                logger.warning(f"节点优化批次失败: {node_type} {batch_num}")
+                return 0, 0
+        
+        async def process_with_semaphore(bn, bs, t):
+            async with opt_semaphore:
+                return await process_optimize_batch(bn, bs, t)
+        
+        results = await asyncio.gather(*[
+            process_with_semaphore(bn, bs, t) 
+            for bn, bs, t in optimize_batches
+        ])
+        
+        for opt_count, del_count in results:
+            optimized_count += opt_count
+            deleted_count += del_count
     
     logger.info(f"节点优化完成: 优化了 {optimized_count} 个节点，删除了 {deleted_count} 个冗余节点")
     
